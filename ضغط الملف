@@ -1,0 +1,135 @@
+// Basic client-side PDF "compression" MVP using pdf-lib
+// Strategy: remove metadata + enable stream compression when saving.
+// Note: This won't always shrink much if the PDF mainly contains images.
+// Next version can re-draw pages to a new PDF with re-encoded images.
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const controls = document.getElementById('controls');
+const quality = document.getElementById('quality');
+const qualityLabel = document.getElementById('qualityLabel');
+const sizeBefore = document.getElementById('sizeBefore');
+const sizeAfter = document.getElementById('sizeAfter');
+const reduction = document.getElementById('reduction');
+const compressBtn = document.getElementById('compressBtn');
+const progressWrap = document.getElementById('progressWrap');
+const progressBar = document.getElementById('progressBar');
+const downloadLink = document.getElementById('downloadLink');
+
+let originalFile = null;
+let originalBytes = null;
+
+function fmtBytes(bytes){
+  if(bytes === 0) return '0 B';
+  const k = 1024, sizes = ['B','KB','MB','GB'];
+  const i = Math.floor(Math.log(bytes)/Math.log(k));
+  return parseFloat((bytes/Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function updateQualityLabel(){
+  const map = {1:'عالي (تقليل أقل)', 2:'متوسط', 3:'قوي'};
+  qualityLabel.textContent = map[quality.value] || 'متوسط';
+}
+updateQualityLabel();
+quality.addEventListener('input', updateQualityLabel);
+
+// Drag & Drop UX
+;['dragenter','dragover'].forEach(ev => {
+  dropzone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag'); });
+});
+;['dragleave','drop'].forEach(ev => {
+  dropzone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('drag'); });
+});
+dropzone.addEventListener('drop', (e)=>{
+  const file = e.dataTransfer.files?.[0];
+  if(file) handleFile(file);
+});
+
+fileInput.addEventListener('change', (e)=>{
+  const file = e.target.files?.[0];
+  if(file) handleFile(file);
+});
+
+function resetOutputs(){
+  sizeAfter.textContent = '—';
+  reduction.textContent = '—';
+  downloadLink.hidden = true;
+  progress(0, false);
+}
+
+function handleFile(file){
+  if(file.type !== 'application/pdf'){
+    alert('الرجاء اختيار ملف PDF.');
+    return;
+  }
+  originalFile = file;
+  resetOutputs();
+  controls.hidden = false;
+  sizeBefore.textContent = fmtBytes(file.size);
+  const reader = new FileReader();
+  reader.onload = () => { originalBytes = new Uint8Array(reader.result); };
+  reader.readAsArrayBuffer(file);
+}
+
+function progress(p, show=true){
+  progressWrap.hidden = !show;
+  progressBar.style.width = Math.max(0, Math.min(100, p)) + '%';
+}
+
+// "Compression" pipeline
+async function compressPDF(){
+  if(!originalBytes){ alert('لم يتم تحميل الملف بعد.'); return; }
+  compressBtn.disabled = true;
+  progress(5, true);
+
+  try{
+    const { PDFDocument } = PDFLib;
+    const pdfDoc = await PDFDocument.load(originalBytes, { ignoreEncryption: true });
+    // Remove metadata
+    pdfDoc.setTitle('');
+    pdfDoc.setAuthor('');
+    pdfDoc.setSubject('');
+    pdfDoc.setKeywords([]);
+    pdfDoc.setProducer('');
+    pdfDoc.setCreator('');
+    pdfDoc.setCreationDate(new Date());
+    pdfDoc.setModificationDate(new Date());
+
+    // Tweak save options based on chosen "quality"
+    // Note: pdf-lib's 'compress' flag controls Flate compression; no image re-encoding here.
+    const level = Number(quality.value);
+    const saveOpts = { useObjectStreams: true, compress: true };
+
+    // Simulate a bit of work for UX
+    progress(35);
+    await new Promise(r=>setTimeout(r, 200));
+
+    const outBytes = await pdfDoc.save(saveOpts);
+    progress(85);
+    await new Promise(r=>setTimeout(r, 150));
+
+    // Report
+    sizeAfter.textContent = fmtBytes(outBytes.length);
+    const diff = originalBytes.length - outBytes.length;
+    const pct = diff > 0 ? ((diff / originalBytes.length) * 100).toFixed(1) : '0.0';
+    reduction.textContent = (diff>0 ? '-' : '+') + Math.abs(pct) + '%';
+
+    // Prepare download
+    const blob = new Blob([outBytes], {type:'application/pdf'});
+    const url = URL.createObjectURL(blob);
+    downloadLink.href = url;
+    const base = (originalFile?.name || 'document.pdf').replace(/\.pdf$/i,'').slice(0,80);
+    downloadLink.download = base + '-compressed.pdf';
+    downloadLink.hidden = false;
+
+    progress(100);
+  }catch(err){
+    console.error(err);
+    alert('حدث خطأ أثناء الضغط. جرّب ملفًا آخر أو أعد تحميل الصفحة.');
+    progress(0,false);
+  }finally{
+    compressBtn.disabled = false;
+  }
+}
+
+compressBtn.addEventListener('click', compressPDF);
